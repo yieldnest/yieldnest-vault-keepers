@@ -68,19 +68,13 @@ contract BaseKeeper {
         }
 
         int256[] memory diffs = new int256[](length);
-        uint256 totalSteps = 0;
 
         // Calculate differences
         for (uint256 i = 0; i < length; i++) {
             diffs[i] = int256(initialAmounts[i]) - int256(finalAmounts[i]);
         }
 
-        // Count total surplus and deficit
-        for (uint256 i = 0; i < length; i++) {
-            if (diffs[i] > 0) totalSteps += uint256(diffs[i]);
-        }
-
-        Transfer[] memory steps = new Transfer[](totalSteps);
+        Transfer[] memory steps = new Transfer[](length);
         uint256 stepIndex = 0;
 
         for (uint256 i = 0; i < length; i++) {
@@ -99,6 +93,11 @@ contract BaseKeeper {
             }
         }
 
-        return steps;
+        Transfer[] memory finalSteps = new Transfer[](stepIndex);
+        for (uint256 i = 0; i < stepIndex; i++) {
+            finalSteps[i] = steps[i];
+        }
+
+        return finalSteps;
     }
 }

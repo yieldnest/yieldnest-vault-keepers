@@ -6,7 +6,7 @@ import "lib/yieldnest-vault/lib/forge-std/src/Test.sol";
 import {MainnetContracts} from "lib/yieldnest-vault/script/Contracts.sol";
 import {SetupVault, Vault, WETH9} from "lib/yieldnest-vault/test/unit/helpers/SetupVault.sol";
 import {MockSTETH} from "lib/yieldnest-vault/test/unit/mocks/MockST_ETH.sol";
-import "src/BaseKeeper.sol";
+import {BaseKeeper} from "src/BaseKeeper.sol";
 
 contract BaseKeeperTest is Test {
     BaseKeeper public baseKeeper;
@@ -28,6 +28,7 @@ contract BaseKeeperTest is Test {
         deal(address(steth), alice, INITIAL_BALANCE);
         // Give Alice some tokens
         deal(alice, INITIAL_BALANCE);
+
         weth.deposit{value: INITIAL_BALANCE}();
         weth.transfer(alice, INITIAL_BALANCE);
 
@@ -39,9 +40,6 @@ contract BaseKeeperTest is Test {
         vault.depositAsset(address(steth), INITIAL_BALANCE, alice);
         vault.depositAsset(address(weth), INITIAL_BALANCE, alice);
         vm.stopPrank();
-
-        // Approve vault to spend Alice's tokens
-        vm.prank(alice);
 
         baseKeeper.setAsset(address(weth), 6e17, true, 0);
         baseKeeper.setAsset(address(steth), 5e17, true, 0);
@@ -261,8 +259,21 @@ contract BaseKeeperTest is Test {
         baseKeeper.rebalance();
     }
 
+    function test_SetAsset() public {
+        baseKeeper.setAsset(address(weth), 8e17, false, 1000);
+        (uint256 targetRatio, uint256 tolerance, bool isManaged) = baseKeeper.assetData(address(weth));
+        assertEq(targetRatio, 8e17);
+        assertEq(isManaged, false);
+        assertEq(tolerance, 1000);
+    }
+
+    function test_SetMaxVault() public {
+        baseKeeper.setMaxVault(address(1));
+        assertEq(address(baseKeeper.maxVault()), address(1));
+    }
+
     function test_CalculateCurrentRatio() public {
-        uint256 currentRatio = baseKeeper.calculateCurrentRatio(address(weth));
+        uint256 currentRatio = baseKeeper.calculateCurrentRatio(address(weth), vault.totalAssets());
         assertEq(currentRatio, 5e17);
     }
 

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.24;
 
+import {Ownable} from "lib/yieldnest-vault/lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import {IERC20} from "lib/yieldnest-vault/lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
-import {IVault} from "lib/yieldnest-vault/src/interface/IVault.sol";
 
+import {Vault} from "lib/yieldnest-vault/src/Vault.sol";
+import {IVault} from "lib/yieldnest-vault/src/interface/IVault.sol";
 import {Math, RAD, RAY, WAD} from "src/libraries/Math.sol";
 
-contract BaseKeeper {
+contract BaseKeeper is Ownable {
     uint256[] public initialRatios;
     uint256[] public finalRatios;
 
@@ -28,15 +30,20 @@ contract BaseKeeper {
         uint256 amount;
     }
 
-    function setMaxVault(address _maxVault) public {
+    constructor() Ownable(msg.sender) {}
+
+    function setMaxVault(address _maxVault) public onlyOwner {
         maxVault = IVault(_maxVault);
     }
 
-    function setAsset(address asset, uint256 targetRatio, bool isManaged, uint256 tolerance) public {
+    function setAsset(address asset, uint256 targetRatio, bool isManaged, uint256 tolerance) public onlyOwner {
         assetData[asset] = AssetData(targetRatio, tolerance, isManaged);
     }
 
-    function setData(uint256[] memory _initialRatios, uint256[] memory _finalRatios, address[] memory _vaults) public {
+    function setData(uint256[] memory _initialRatios, uint256[] memory _finalRatios, address[] memory _vaults)
+        public
+        onlyOwner
+    {
         require(_initialRatios.length > 1, "Array length must be greater than 1");
         require(_initialRatios.length == _finalRatios.length, "Array lengths must match");
         require(_initialRatios.length == _vaults.length, "Array lengths must match");
@@ -62,11 +69,8 @@ contract BaseKeeper {
         return total;
     }
 
-    function calculateCurrentRatio(address asset) public view returns (uint256) {
-        if (!assetData[asset].isManaged) {
-            return 0;
-        }
-        uint256 totalAssets = maxVault.totalAssets();
+    function calculateCurrentRatio(address asset, uint256 totalAssets) public view returns (uint256) {
+        require(assetData[asset].isManaged, "Asset is not managed");
         uint256 balance;
 
         if (isVault(asset)) {
@@ -79,9 +83,9 @@ contract BaseKeeper {
         return currentRatio;
     }
 
-    function isVault(address asset) public view returns (bool) {
-        try IVault(asset).totalAssets() returns (uint256 totalAssetsWAD) {
-            return true;
+    function isVault(address target) public view returns (bool) {
+        try Vault(payable(target)).VAULT_VERSION() returns (string memory version) {
+            return bytes(version).length > 0;
         } catch {
             return false;
         }
@@ -89,17 +93,20 @@ contract BaseKeeper {
 
     function shouldRebalance() public view returns (bool) {
         address[] memory underlyingAssets = maxVault.getAssets();
-        uint256 totalAssetsWAD = maxVault.totalAssets();
 
-        // Step 2: Check each underlying vault's totalAssets
+        uint256 totalAssets = maxVault.totalAssets();
+
+        // Check each underlying asset's ratio
         for (uint256 i = 0; i < underlyingAssets.length; i++) {
             address asset = underlyingAssets[i];
-            uint256 targetRatioWAD = assetData[asset].targetRatio; // Target ratio in WAD
-            uint256 actualRatioWAD = calculateCurrentRatio(asset); // Calculate current ratio
 
-            // Step 3: Check if the actual ratio deviates from the target ratio
-            if (!_isWithinTolerance(asset, actualRatioWAD, targetRatioWAD)) {
-                return true; // Rebalancing is required
+            if (assetData[asset].isManaged) {
+                uint256 actualRatio = calculateCurrentRatio(asset, totalAssets); // Calculate current ratio
+
+                // Check if the actual ratio deviates from the target ratio
+                if (!_isWithinTolerance(asset, actualRatio, assetData[asset].targetRatio)) {
+                    return true; // Rebalancing is required
+                }
             }
         }
         // All vaults are within target ratios

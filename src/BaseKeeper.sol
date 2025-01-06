@@ -3,26 +3,24 @@ pragma solidity ^0.8.24;
 
 import {Ownable} from "lib/yieldnest-vault/lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import {IERC20} from "lib/yieldnest-vault/lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {IProvider} from "lib/yieldnest-vault/src/interface/IProvider.sol";
 
 import {Vault} from "lib/yieldnest-vault/src/Vault.sol";
 import {IVault} from "lib/yieldnest-vault/src/interface/IVault.sol";
-import {Math, RAD, RAY, WAD} from "src/libraries/Math.sol";
+import {Math} from "src/libraries/Math.sol";
+
+import {console} from "lib/yieldnest-vault/lib/forge-std/src/console.sol";
 
 contract BaseKeeper is Ownable {
     uint256[] public initialRatios;
-    uint256[] public finalRatios;
+    uint256[] public targetRatios;
 
     // vault[0] is max vault and rest are underlying vaults
     address[] public vaults;
+    address public underlyingAsset;
     IVault public maxVault;
 
-    mapping(address => AssetData) public assetData;
-
-    struct AssetData {
-        uint256 targetRatio;
-        uint256 tolerance;
-        bool isManaged;
-    }
+    uint256 public tolerance;
 
     struct Transfer {
         uint256 from;
@@ -34,52 +32,62 @@ contract BaseKeeper is Ownable {
 
     function setMaxVault(address _maxVault) public onlyOwner {
         maxVault = IVault(_maxVault);
+        underlyingAsset = maxVault.asset();
     }
 
-    function setAsset(address asset, uint256 targetRatio, bool isManaged, uint256 tolerance) public onlyOwner {
-        assetData[asset] = AssetData(targetRatio, tolerance, isManaged);
+    function setTolerance(uint256 _tolerance) public onlyOwner {
+        tolerance = _tolerance;
     }
 
-    function setData(uint256[] memory _initialRatios, uint256[] memory _finalRatios, address[] memory _vaults)
-        public
-        onlyOwner
-    {
-        require(_initialRatios.length > 1, "Array length must be greater than 1");
-        require(_initialRatios.length == _finalRatios.length, "Array lengths must match");
-        require(_initialRatios.length == _vaults.length, "Array lengths must match");
+    function setData(uint256[] memory _targetRatios, address[] memory _vaults) public onlyOwner {
+        require(_targetRatios.length > 1, "Array length must be greater than 1");
+        require(_targetRatios.length == _vaults.length, "Array lengths must match");
 
-        initialRatios = _initialRatios;
-        finalRatios = _finalRatios;
+        targetRatios = _targetRatios;
+        initialRatios = new uint256[](_targetRatios.length);
         vaults = _vaults;
+
+        maxVault = IVault(payable(_vaults[0]));
+        underlyingAsset = maxVault.asset();
     }
 
-    function totalInitialRatios() public view returns (uint256) {
+    function totalInitialRatios() public returns (uint256) {
+        uint256 totalAssets = maxVault.totalAssets();
         uint256 total = 0;
-        for (uint256 i = 0; i < initialRatios.length; i++) {
+        for (uint256 i = 0; i < targetRatios.length; i++) {
+            initialRatios[i] = calculateCurrentRatio(vaults[i], totalAssets);
             total += initialRatios[i];
         }
         return total;
     }
 
-    function totalFinalRatios() public view returns (uint256) {
+    function totalTargetRatios() public view returns (uint256) {
         uint256 total = 0;
-        for (uint256 i = 0; i < finalRatios.length; i++) {
-            total += finalRatios[i];
+        for (uint256 i = 0; i < targetRatios.length; i++) {
+            total += targetRatios[i];
         }
         return total;
     }
 
     function calculateCurrentRatio(address asset, uint256 totalAssets) public view returns (uint256) {
-        require(assetData[asset].isManaged, "Asset is not managed");
         uint256 balance;
-
-        if (isVault(asset)) {
-            balance = IVault(asset).totalAssets();
+        uint256 rate;
+        if (asset == address(maxVault)) {
+            balance = IERC20(underlyingAsset).balanceOf(address(maxVault));
+            rate = IProvider(maxVault.provider()).getRate(underlyingAsset);
         } else {
-            balance = IERC20(asset).balanceOf(address(maxVault));
+            if (isVault(asset)) {
+                balance = IVault(asset).totalAssets();
+                rate = IProvider(maxVault.provider()).getRate(asset);
+            } else {
+                balance = IERC20(asset).balanceOf(address(maxVault));
+                rate = IProvider(maxVault.provider()).getRate(asset);
+            }
         }
+
         // get current percentage in wad: ((wad*X) / Y) / WAD = percentZ (1e18 = 100%)
-        uint256 currentRatio = Math.wdiv(balance, totalAssets);
+        uint256 adjustedBalance = Math.wmul(balance, rate);
+        uint256 currentRatio = Math.wdiv(adjustedBalance, totalAssets);
         return currentRatio;
     }
 
@@ -92,50 +100,46 @@ contract BaseKeeper is Ownable {
     }
 
     function shouldRebalance() public view returns (bool) {
-        address[] memory underlyingAssets = maxVault.getAssets();
-
         uint256 totalAssets = maxVault.totalAssets();
+        address asset;
+        // Check each underlying asset's ratio. start from 1 to skip max vault
+        for (uint256 i = 1; i < vaults.length; i++) {
+            asset = vaults[i];
+            uint256 actualRatio = calculateCurrentRatio(asset, totalAssets); // Calculate current ratio
 
-        // Check each underlying asset's ratio
-        for (uint256 i = 0; i < underlyingAssets.length; i++) {
-            address asset = underlyingAssets[i];
-
-            if (assetData[asset].isManaged) {
-                uint256 actualRatio = calculateCurrentRatio(asset, totalAssets); // Calculate current ratio
-
-                // Check if the actual ratio deviates from the target ratio
-                if (!_isWithinTolerance(asset, actualRatio, assetData[asset].targetRatio)) {
-                    return true; // Rebalancing is required
-                }
+            // Check if the actual ratio deviates from the target ratio
+            if (!_isWithinTolerance(actualRatio, targetRatios[i])) {
+                return true; // Rebalancing is required
             }
         }
         // All vaults are within target ratios
         return false;
     }
 
-    function _isWithinTolerance(address asset, uint256 actualWAD, uint256 targetWAD) public view returns (bool) {
-        uint256 tolerance = assetData[asset].tolerance;
+    function _isWithinTolerance(uint256 actualWAD, uint256 targetWAD) public view returns (bool) {
         if (actualWAD >= targetWAD) {
+            // todo: make tolerance a percentage
             return (actualWAD - targetWAD) <= tolerance; // Upper bound
         } else {
             return (targetWAD - actualWAD) <= tolerance; // Lower bound
         }
     }
 
-    function rebalance() public view returns (Transfer[] memory) {
-        uint256 length = initialRatios.length;
+    function rebalance() public returns (Transfer[] memory) {
+        uint256 length = targetRatios.length;
         require(length > 1, "Array length must be greater than 1");
-        require(length == finalRatios.length, "Array lengths must match");
+        require(length == targetRatios.length, "Array lengths must match");
         require(length == vaults.length, "Array lengths must match");
 
         uint256 totalInitial = totalInitialRatios();
-        uint256 totalFinal = totalFinalRatios();
+        uint256 totalFinal = totalTargetRatios();
+
         require(totalInitial == totalFinal, "Ratios must add up");
 
         // address baseVault = vaults[0];
-        // uint256 totalAssets = IVault(baseVault).totalAssets();
+        uint256 totalAssets = maxVault.totalAssets();
 
-        uint256 totalAssets = 100; // for testing set to 100
+        // uint256 totalAssets = 100; // for testing set to 100
 
         uint256[] memory initialAmounts = new uint256[](length);
         for (uint256 i = 0; i < length; i++) {
@@ -144,7 +148,7 @@ contract BaseKeeper is Ownable {
 
         uint256[] memory finalAmounts = new uint256[](length);
         for (uint256 i = 0; i < length; i++) {
-            finalAmounts[i] = finalRatios[i] * totalAssets / totalFinal;
+            finalAmounts[i] = targetRatios[i] * totalAssets / totalFinal;
         }
 
         int256[] memory diffs = new int256[](length);

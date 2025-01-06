@@ -280,5 +280,9 @@ contract BaseKeeperTest is Test {
     function test_ShouldRebalance() public {
         bool shouldRebalance = baseKeeper.shouldRebalance();
         assertEq(shouldRebalance, true);
+
+        baseKeeper.setAsset(address(weth), 5e17, true, 0);
+        shouldRebalance = baseKeeper.shouldRebalance();
+        assertEq(shouldRebalance, false);
     }
 }

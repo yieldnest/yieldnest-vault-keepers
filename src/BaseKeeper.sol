@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.24;
 
-// import {IVault} from "lib/yieldnest-vault/src/interface/IVault.sol";
+import {IERC20} from "lib/yieldnest-vault/lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {IVault} from "lib/yieldnest-vault/src/interface/IVault.sol";
+
+import {Math, RAD, RAY, WAD} from "src/libraries/Math.sol";
 
 contract BaseKeeper {
     uint256[] public initialRatios;
@@ -9,11 +12,28 @@ contract BaseKeeper {
 
     // vault[0] is max vault and rest are underlying vaults
     address[] public vaults;
+    IVault public maxVault;
+
+    mapping(address => AssetData) public assetData;
+
+    struct AssetData {
+        uint256 targetRatio;
+        uint256 tolerance;
+        bool isManaged;
+    }
 
     struct Transfer {
         uint256 from;
         uint256 to;
         uint256 amount;
+    }
+
+    function setMaxVault(address _maxVault) public {
+        maxVault = IVault(_maxVault);
+    }
+
+    function setAsset(address asset, uint256 targetRatio, bool isManaged, uint256 tolerance) public {
+        assetData[asset] = AssetData(targetRatio, tolerance, isManaged);
     }
 
     function setData(uint256[] memory _initialRatios, uint256[] memory _finalRatios, address[] memory _vaults) public {
@@ -42,7 +62,60 @@ contract BaseKeeper {
         return total;
     }
 
-    function caculateSteps() public view returns (Transfer[] memory) {
+    function calculateCurrentRatio(address asset) public view returns (uint256) {
+        if (!assetData[asset].isManaged) {
+            return 0;
+        }
+        uint256 totalAssets = maxVault.totalAssets();
+        uint256 balance;
+
+        if (isVault(asset)) {
+            balance = IVault(asset).totalAssets();
+        } else {
+            balance = IERC20(asset).balanceOf(address(maxVault));
+        }
+        // get current percentage in wad: ((wad*X) / Y) / WAD = percentZ (1e18 = 100%)
+        uint256 currentRatio = Math.wdiv(balance, totalAssets);
+        return currentRatio;
+    }
+
+    function isVault(address asset) public view returns (bool) {
+        try IVault(asset).totalAssets() returns (uint256 totalAssetsWAD) {
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function shouldRebalance() public view returns (bool) {
+        address[] memory underlyingAssets = maxVault.getAssets();
+        uint256 totalAssetsWAD = maxVault.totalAssets();
+
+        // Step 2: Check each underlying vault's totalAssets
+        for (uint256 i = 0; i < underlyingAssets.length; i++) {
+            address asset = underlyingAssets[i];
+            uint256 targetRatioWAD = assetData[asset].targetRatio; // Target ratio in WAD
+            uint256 actualRatioWAD = calculateCurrentRatio(asset); // Calculate current ratio
+
+            // Step 3: Check if the actual ratio deviates from the target ratio
+            if (!_isWithinTolerance(asset, actualRatioWAD, targetRatioWAD)) {
+                return true; // Rebalancing is required
+            }
+        }
+        // All vaults are within target ratios
+        return false;
+    }
+
+    function _isWithinTolerance(address asset, uint256 actualWAD, uint256 targetWAD) public view returns (bool) {
+        uint256 tolerance = assetData[asset].tolerance;
+        if (actualWAD >= targetWAD) {
+            return (actualWAD - targetWAD) <= tolerance; // Upper bound
+        } else {
+            return (targetWAD - actualWAD) <= tolerance; // Lower bound
+        }
+    }
+
+    function rebalance() public view returns (Transfer[] memory) {
         uint256 length = initialRatios.length;
         require(length > 1, "Array length must be greater than 1");
         require(length == finalRatios.length, "Array lengths must match");

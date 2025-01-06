@@ -1,17 +1,59 @@
 // SPDX-License-Identifier: BSD-3-Clause
 pragma solidity ^0.8.24;
 
-import "lib/forge-std/src/Test.sol";
+import "lib/yieldnest-vault/lib/forge-std/src/Test.sol";
+
+import {MainnetContracts} from "lib/yieldnest-vault/script/Contracts.sol";
+import {SetupVault, Vault, WETH9} from "lib/yieldnest-vault/test/unit/helpers/SetupVault.sol";
+import {MockSTETH} from "lib/yieldnest-vault/test/unit/mocks/MockST_ETH.sol";
 import "src/BaseKeeper.sol";
 
 contract BaseKeeperTest is Test {
-    BaseKeeper baseKeeper;
+    BaseKeeper public baseKeeper;
+    Vault public vault;
+    WETH9 public weth;
+    MockSTETH public steth;
+
+    uint256 public INITIAL_BALANCE = 10 ether;
+
+    address public alice = address(0xa11ce);
 
     function setUp() public {
         baseKeeper = new BaseKeeper();
+        SetupVault setupVault = new SetupVault();
+        (vault, weth) = setupVault.setup();
+        // Replace the steth mock with our custom MockSTETH
+        steth = MockSTETH(payable(MainnetContracts.STETH));
+
+        deal(address(steth), alice, INITIAL_BALANCE);
+        // Give Alice some tokens
+        deal(alice, INITIAL_BALANCE);
+        weth.deposit{value: INITIAL_BALANCE}();
+        weth.transfer(alice, INITIAL_BALANCE);
+
+        vm.startPrank(alice);
+
+        steth.approve(address(vault), INITIAL_BALANCE);
+        weth.approve(address(vault), type(uint256).max);
+
+        vault.depositAsset(address(steth), INITIAL_BALANCE, alice);
+        vault.depositAsset(address(weth), INITIAL_BALANCE, alice);
+        vm.stopPrank();
+
+        // Approve vault to spend Alice's tokens
+        vm.prank(alice);
+
+        baseKeeper.setAsset(address(weth), 6e17, true, 0);
+        baseKeeper.setAsset(address(steth), 5e17, true, 0);
+        baseKeeper.setMaxVault(address(vault));
+
+        vm.label(address(weth), "WETH");
+        vm.label(address(steth), "STETH");
+        vm.label(address(vault), "Vault");
+        vm.label(address(baseKeeper), "BaseKeeper");
     }
 
-    function testSetData() public {
+    function test_SetData() public {
         uint256[] memory initialRatios = new uint256[](3);
         uint256[] memory finalRatios = new uint256[](3);
         address[] memory vaults = new address[](3);
@@ -35,7 +77,7 @@ contract BaseKeeperTest is Test {
         assertEq(baseKeeper.vaults(2), address(3));
     }
 
-    function testTotalInitialRatios() public {
+    function test_TotalInitialRatios() public {
         uint256[] memory initialRatios = new uint256[](3);
         uint256[] memory finalRatios = new uint256[](3);
         address[] memory vaults = new address[](3);
@@ -57,7 +99,7 @@ contract BaseKeeperTest is Test {
         assertEq(baseKeeper.totalInitialRatios(), 100);
     }
 
-    function testTotalFinalRatios() public {
+    function test_TotalFinalRatios() public {
         uint256[] memory initialRatios = new uint256[](3);
         uint256[] memory finalRatios = new uint256[](3);
         address[] memory vaults = new address[](3);
@@ -79,7 +121,7 @@ contract BaseKeeperTest is Test {
         assertEq(baseKeeper.totalFinalRatios(), 100);
     }
 
-    function testCaculateSteps_ExampleOne() public {
+    function test_Rebalance_ExampleOne() public {
         uint256[] memory initialRatios = new uint256[](3);
         uint256[] memory finalRatios = new uint256[](3);
         address[] memory vaults = new address[](3);
@@ -98,7 +140,7 @@ contract BaseKeeperTest is Test {
 
         baseKeeper.setData(initialRatios, finalRatios, vaults);
 
-        BaseKeeper.Transfer[] memory steps = baseKeeper.caculateSteps();
+        BaseKeeper.Transfer[] memory steps = baseKeeper.rebalance();
 
         assertEq(steps.length, 1);
 
@@ -108,7 +150,7 @@ contract BaseKeeperTest is Test {
         assertEq(steps[0].amount, 10);
     }
 
-    function testCaculateSteps_ExampleTwo() public {
+    function test_Rebalance_ExampleTwo() public {
         uint256[] memory initialRatios = new uint256[](3);
         uint256[] memory finalRatios = new uint256[](3);
         address[] memory vaults = new address[](3);
@@ -127,7 +169,7 @@ contract BaseKeeperTest is Test {
 
         baseKeeper.setData(initialRatios, finalRatios, vaults);
 
-        BaseKeeper.Transfer[] memory steps = baseKeeper.caculateSteps();
+        BaseKeeper.Transfer[] memory steps = baseKeeper.rebalance();
 
         assertEq(steps.length, 2);
 
@@ -142,7 +184,7 @@ contract BaseKeeperTest is Test {
         assertEq(steps[1].amount, 20);
     }
 
-    function testCaculateSteps_ExampleThree() public {
+    function test_Rebalance_ExampleThree() public {
         uint256[] memory initialRatios = new uint256[](3);
         uint256[] memory finalRatios = new uint256[](3);
         address[] memory vaults = new address[](3);
@@ -161,7 +203,7 @@ contract BaseKeeperTest is Test {
 
         baseKeeper.setData(initialRatios, finalRatios, vaults);
 
-        BaseKeeper.Transfer[] memory steps = baseKeeper.caculateSteps();
+        BaseKeeper.Transfer[] memory steps = baseKeeper.rebalance();
 
         assertEq(steps.length, 2);
 
@@ -176,7 +218,7 @@ contract BaseKeeperTest is Test {
         assertEq(steps[1].amount, 17);
     }
 
-    function testSetDataFailsForMismatchedArrayLengths() public {
+    function test_SetDataFailsForMismatchedArrayLengths() public {
         uint256[] memory initialRatios = new uint256[](2);
         uint256[] memory finalRatios = new uint256[](3);
         address[] memory vaults = new address[](3);
@@ -196,7 +238,7 @@ contract BaseKeeperTest is Test {
         baseKeeper.setData(initialRatios, finalRatios, vaults);
     }
 
-    function testCaculateStepsFailsForUnmatchedRatios() public {
+    function test_RebalanceFailsForUnmatchedRatios() public {
         uint256[] memory initialRatios = new uint256[](3);
         uint256[] memory finalRatios = new uint256[](3);
         address[] memory vaults = new address[](3);
@@ -216,6 +258,16 @@ contract BaseKeeperTest is Test {
         baseKeeper.setData(initialRatios, finalRatios, vaults);
 
         vm.expectRevert("Ratios must add up");
-        baseKeeper.caculateSteps();
+        baseKeeper.rebalance();
+    }
+
+    function test_CalculateCurrentRatio() public {
+        uint256 currentRatio = baseKeeper.calculateCurrentRatio(address(weth));
+        assertEq(currentRatio, 5e17);
+    }
+
+    function test_ShouldRebalance() public {
+        bool shouldRebalance = baseKeeper.shouldRebalance();
+        assertEq(shouldRebalance, true);
     }
 }

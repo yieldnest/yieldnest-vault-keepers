@@ -8,7 +8,7 @@ import {SetupVault, Vault, WETH9} from "lib/yieldnest-vault/test/unit/helpers/Se
 import {BaseKeeper} from "src/BaseKeeper.sol";
 
 contract BaseKeeperTest is Test, MainnetActors {
-    BaseKeeper public baseKeeper;
+    BaseKeeper public keeper;
     Vault public maxVault;
     Vault public underlyingVault1;
     Vault public underlyingVault2;
@@ -20,7 +20,7 @@ contract BaseKeeperTest is Test, MainnetActors {
     address public alice = address(0xa11ce);
 
     function setUp() public {
-        baseKeeper = new BaseKeeper();
+        keeper = new BaseKeeper();
 
         SetupVault setupVault = new SetupVault();
         (maxVault, weth) = setupVault.setup();
@@ -47,7 +47,7 @@ contract BaseKeeperTest is Test, MainnetActors {
         vm.label(address(maxVault), "Max Vault");
         vm.label(address(underlyingVault1), "Underlying Vault 1");
         vm.label(address(underlyingVault2), "Underlying Vault 2");
-        vm.label(address(baseKeeper), "BaseKeeper");
+        vm.label(address(keeper), "BaseKeeper");
     }
 
     function test_ViewFunctions() public view {
@@ -71,65 +71,68 @@ contract BaseKeeperTest is Test, MainnetActors {
         vaults[1] = address(underlyingVault1);
         vaults[2] = address(underlyingVault2);
 
-        baseKeeper.setData(finalRatios, vaults);
+        keeper.setData(finalRatios, vaults);
 
-        assertEq(baseKeeper.initialRatios(0), 1e18);
-        assertEq(baseKeeper.targetRatios(1), 40 * 1e16);
-        assertEq(baseKeeper.vaults(2), address(underlyingVault2));
+        uint256[] memory initialRatios = keeper.currentRatios();
+        uint256[] memory targetRatios = keeper.finalRatios();
+
+        assertEq(initialRatios.length, 3);
+        assertEq(targetRatios.length, 3);
+
+        assertEq(initialRatios[0], 1e18);
+        assertEq(targetRatios[1], 40 * 1e16);
+        assertEq(keeper.vaults(2), address(underlyingVault2));
     }
 
-    function test_Rebalance_ExampleOne() public {
+    function test_CalculateTransfers_ExampleOne() public {
         setData(0.5e18, 0.25e18, 0.25e18);
 
-        BaseKeeper.Transfer[] memory steps = baseKeeper.rebalance();
+        (BaseKeeper.Withdraw[] memory withdraws, BaseKeeper.Deposit[] memory deposits) = keeper.calculateTransfers();
 
-        assertEq(steps.length, 2, "Expected 2 steps");
+        assertEq(withdraws.length, 0, "Expected 0 withdraws");
+        assertEq(deposits.length, 2, "Expected 2 deposits");
 
-        // Validate first step
-        assertEq(steps[0].from, 0, "Expected from for step 0");
-        assertEq(steps[0].to, 1, "Expected to for step 0");
-        assertEq(steps[0].amount, INITIAL_BALANCE / 4, "Expected amount for step 0");
+        // Validate first deposit
+        assertEq(deposits[0].to, 1, "Expected to for deposit 0");
+        assertEq(deposits[0].amount, INITIAL_BALANCE / 4, "Expected amount for deposit 0");
 
-        // Validate second step
-        assertEq(steps[1].from, 0, "Expected from for step 1");
-        assertEq(steps[1].to, 2, "Expected to for step 1");
-        assertEq(steps[1].amount, INITIAL_BALANCE / 4, "Expected amount for step 1");
+        // Validate second deposit
+        assertEq(deposits[1].to, 2, "Expected to for deposit 1");
+        assertEq(deposits[1].amount, INITIAL_BALANCE / 4, "Expected amount for deposit 1");
     }
 
-    function test_Rebalance_ExampleTwo() public {
+    function test_CalculateTransfers_ExampleTwo() public {
         setData(0.5e18, 0.4e18, 0.1e18);
 
-        BaseKeeper.Transfer[] memory steps = baseKeeper.rebalance();
+        (BaseKeeper.Withdraw[] memory withdraws, BaseKeeper.Deposit[] memory deposits) = keeper.calculateTransfers();
 
-        assertEq(steps.length, 2);
+        assertEq(withdraws.length, 0, "Expected 0 withdraws");
+        assertEq(deposits.length, 2, "Expected 2 deposits");
 
-        // Validate first step
-        assertEq(steps[0].from, 0, "Expected from for step 0");
-        assertEq(steps[0].to, 1, "Expected to for step 0");
-        assertEq(steps[0].amount, 4 * INITIAL_BALANCE / 10, "Expected amount for step 0");
+        // Validate first deposit
+        assertEq(deposits[0].to, 1, "Expected to for deposit 0");
+        assertEq(deposits[0].amount, 4 * INITIAL_BALANCE / 10, "Expected amount for deposit 0");
 
-        // Validate second step
-        assertEq(steps[1].from, 0, "Expected from for step 1");
-        assertEq(steps[1].to, 2, "Expected to for step 1");
-        assertEq(steps[1].amount, 1 * INITIAL_BALANCE / 10, "Expected amount for step 1");
+        // Validate second deposit
+        assertEq(deposits[1].to, 2, "Expected to for deposit 1");
+        assertEq(deposits[1].amount, 1 * INITIAL_BALANCE / 10, "Expected amount for deposit 1");
     }
 
-    function test_Rebalance_ExampleThree() public {
+    function test_CalculateTransfers_ExampleThree() public {
         setData(0.5e18, 0.2e18, 0.3e18);
 
-        BaseKeeper.Transfer[] memory steps = baseKeeper.rebalance();
+        (BaseKeeper.Withdraw[] memory withdraws, BaseKeeper.Deposit[] memory deposits) = keeper.calculateTransfers();
 
-        assertEq(steps.length, 2, "Expected 2 steps");
+        assertEq(withdraws.length, 0, "Expected 0 withdraws");
+        assertEq(deposits.length, 2, "Expected 2 deposits");
 
-        // Validate first step
-        assertEq(steps[0].from, 0, "Expected from for step 0");
-        assertEq(steps[0].to, 1, "Expected to for step 0");
-        assertEq(steps[0].amount, 2 * INITIAL_BALANCE / 10, "Expected amount for step 0");
+        // Validate first deposit
+        assertEq(deposits[0].to, 1, "Expected to for deposit 0");
+        assertEq(deposits[0].amount, 2 * INITIAL_BALANCE / 10, "Expected amount for deposit 0");
 
-        // Validate second step
-        assertEq(steps[1].from, 0, "Expected from for step 1");
-        assertEq(steps[1].to, 2, "Expected to for step 1");
-        assertEq(steps[1].amount, 3 * INITIAL_BALANCE / 10, "Expected amount for step 1");
+        // Validate second deposit
+        assertEq(deposits[1].to, 2, "Expected to for deposit 1");
+        assertEq(deposits[1].amount, 3 * INITIAL_BALANCE / 10, "Expected amount for deposit 1");
     }
 
     function test_SetDataFailsForMismatchedArrayLengths() public {
@@ -144,7 +147,7 @@ contract BaseKeeperTest is Test, MainnetActors {
         vaults[1] = address(2);
 
         vm.expectRevert("Array lengths must match");
-        baseKeeper.setData(finalRatios, vaults);
+        keeper.setData(finalRatios, vaults);
     }
 
     function test_SetDataFailsForInvalidRatios() public {
@@ -162,24 +165,24 @@ contract BaseKeeperTest is Test, MainnetActors {
         finalRatios[1] = ratio2;
         finalRatios[2] = ratio3;
 
-        vm.expectRevert("Initial and target ratios must match");
-        baseKeeper.setData(finalRatios, vaults);
+        vm.expectRevert("Target ratios must add up to 100 %");
+        keeper.setData(finalRatios, vaults);
     }
 
     function test_CalculateCurrentRatio() public {
         setData(0.5e18, 0.25e18, 0.25e18);
 
-        uint256 currentRatio = baseKeeper.calculateCurrentRatio(address(maxVault), maxVault.totalAssets());
+        uint256 currentRatio = keeper.calculateCurrentRatio(address(maxVault), maxVault.totalAssets());
         assertEq(currentRatio, 1e18);
     }
 
     function test_ShouldRebalance() public {
         setData(0.5e18, 0.25e18, 0.25e18);
-        bool shouldRebalance = baseKeeper.shouldRebalance();
+        bool shouldRebalance = keeper.shouldRebalance();
         assertEq(shouldRebalance, true);
 
         setData(1e18, 0, 0);
-        shouldRebalance = baseKeeper.shouldRebalance();
+        shouldRebalance = keeper.shouldRebalance();
         assertEq(shouldRebalance, false);
     }
 
@@ -195,10 +198,12 @@ contract BaseKeeperTest is Test, MainnetActors {
         finalRatios[1] = ratio2;
         finalRatios[2] = ratio3;
 
-        baseKeeper.setData(finalRatios, vaults);
+        keeper.setData(finalRatios, vaults);
 
-        assertEq(baseKeeper.targetRatios(0), ratio1, "Target ratio 0 incorrect");
-        assertEq(baseKeeper.targetRatios(1), ratio2, "Target ratio 1 incorrect");
-        assertEq(baseKeeper.targetRatios(2), ratio3, "Target ratio 2 incorrect");
+        uint256[] memory targetRatios = keeper.finalRatios();
+
+        assertEq(targetRatios[0], ratio1, "Target ratio 0 incorrect");
+        assertEq(targetRatios[1], ratio2, "Target ratio 1 incorrect");
+        assertEq(targetRatios[2], ratio3, "Target ratio 2 incorrect");
     }
 }

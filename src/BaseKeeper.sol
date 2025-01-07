@@ -11,7 +11,9 @@ import {Math} from "src/libraries/Math.sol";
 
 import {console} from "lib/yieldnest-vault/lib/forge-std/src/console.sol";
 
-contract BaseKeeper is Ownable {
+import {ReentrancyGuard} from "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
+
+contract BaseKeeper is Ownable, ReentrancyGuard {
     uint256[] private targetRatios;
 
     // vault[0] is max vault and rest are underlying vaults
@@ -114,7 +116,7 @@ contract BaseKeeper is Ownable {
 
     function isWithinTolerance(uint256 actualWAD, uint256 targetWAD) public view returns (bool) {
         if (actualWAD >= targetWAD) {
-            // todo: make tolerance a percentage
+            // TODO: make tolerance a percentage
             return (actualWAD - targetWAD) <= tolerance; // Upper bound
         } else {
             return (targetWAD - actualWAD) <= tolerance; // Lower bound
@@ -242,5 +244,49 @@ contract BaseKeeper is Ownable {
         return (finalWithdraws, finalDeposits);
     }
 
-    function rebalance() public {}
+    function rebalance() public nonReentrant {
+        (Withdraw[] memory withdraws, Deposit[] memory deposits) = calculateTransfers();
+        for (uint256 i = 0; i < withdraws.length; i++) {
+            _executeWithdraw(withdraws[i]);
+        }
+        for (uint256 i = 0; i < deposits.length; i++) {
+            _executeDeposit(deposits[i]);
+        }
+    }
+
+    function _executeWithdraw(Withdraw memory withdraw) internal {
+        uint256 amount = withdraw.amount;
+        address vault = vaults[withdraw.from];
+
+        address[] memory targets = new address[](1);
+        targets[0] = vault;
+
+        uint256[] memory values = new uint256[](1);
+        values[0] = 0;
+
+        bytes[] memory data = new bytes[](1);
+        data[0] =
+            abi.encodeWithSignature("withdraw(uint256,address,address)", amount, address(maxVault), address(maxVault));
+
+        maxVault.processor(targets, values, data);
+    }
+
+    function _executeDeposit(Deposit memory deposit) internal {
+        uint256 amount = deposit.amount;
+        address vault = vaults[deposit.to];
+
+        address[] memory targets = new address[](2);
+        targets[0] = asset;
+        targets[1] = vault;
+
+        uint256[] memory values = new uint256[](2);
+        values[0] = 0;
+        values[1] = 0;
+
+        bytes[] memory data = new bytes[](2);
+        data[0] = abi.encodeWithSignature("approve(address,uint256)", vault, amount);
+        data[1] = abi.encodeWithSignature("deposit(uint256,address)", amount, address(maxVault));
+
+        maxVault.processor(targets, values, data);
+    }
 }

@@ -223,11 +223,10 @@ contract BaseKeeper is Ownable, ReentrancyGuard {
                     depositAmount += deposits[i].amount;
                 }
             }
-            if (withdrawAmount > 0) {
-                sortedWithdraws[sortedWithdrawIndex++] = Withdraw(j, withdrawAmount);
-            }
-            if (depositAmount > 0) {
-                sortedDeposits[sortedDepositIndex++] = Deposit(j, depositAmount);
+            if (withdrawAmount > depositAmount) {
+                sortedWithdraws[sortedWithdrawIndex++] = Withdraw(j, withdrawAmount - depositAmount);
+            } else if (depositAmount > withdrawAmount) {
+                sortedDeposits[sortedDepositIndex++] = Deposit(j, depositAmount - withdrawAmount);
             }
         }
 

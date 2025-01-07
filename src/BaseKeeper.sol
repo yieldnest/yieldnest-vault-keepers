@@ -11,9 +11,10 @@ import {Math} from "src/libraries/Math.sol";
 
 import {console} from "lib/yieldnest-vault/lib/forge-std/src/console.sol";
 
-contract BaseKeeper is Ownable {
-    uint256[] public initialRatios;
-    uint256[] public targetRatios;
+import {ReentrancyGuard} from "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
+
+contract BaseKeeper is Ownable, ReentrancyGuard {
+    uint256[] private targetRatios;
 
     // vault[0] is max vault and rest are underlying vaults
     address[] public vaults;
@@ -22,9 +23,13 @@ contract BaseKeeper is Ownable {
 
     uint256 public tolerance;
 
-    struct Transfer {
-        uint256 from;
+    struct Deposit {
         uint256 to;
+        uint256 amount;
+    }
+
+    struct Withdraw {
+        uint256 from;
         uint256 amount;
     }
 
@@ -39,7 +44,6 @@ contract BaseKeeper is Ownable {
         require(_targetRatios.length == _vaults.length, "Array lengths must match");
 
         targetRatios = _targetRatios;
-        initialRatios = new uint256[](_targetRatios.length);
         vaults = _vaults;
         for (uint256 i = 0; i < _vaults.length; i++) {
             require(isVault(_vaults[i]), "Invalid vault");
@@ -48,25 +52,25 @@ contract BaseKeeper is Ownable {
         maxVault = IVault(payable(_vaults[0]));
         asset = maxVault.asset();
 
-        require(_totalInitialRatios() == _totalTargetRatios(), "Initial and target ratios must match");
+        require(totalInitialRatios() == totalTargetRatios(), "Initial and target ratios must match");
     }
 
-    function _totalInitialRatios() internal returns (uint256) {
+    function totalInitialRatios() public view returns (uint256) {
         uint256 totalAssets = maxVault.totalAssets();
         uint256 total = 0;
         for (uint256 i = 0; i < targetRatios.length; i++) {
-            initialRatios[i] = calculateCurrentRatio(vaults[i], totalAssets);
-            total += initialRatios[i];
+            total += calculateCurrentRatio(vaults[i], totalAssets);
         }
         require(total == 1e18, "Initial ratios must add up to 100 %");
         return total;
     }
 
-    function _totalTargetRatios() internal view returns (uint256) {
+    function totalTargetRatios() public view returns (uint256) {
         uint256 total = 0;
         for (uint256 i = 0; i < targetRatios.length; i++) {
             total += targetRatios[i];
         }
+        require(total == 1e18, "Target ratios must add up to 100 %");
         return total;
     }
 
@@ -96,12 +100,10 @@ contract BaseKeeper is Ownable {
 
     function shouldRebalance() public view returns (bool) {
         uint256 totalAssets = maxVault.totalAssets();
-        address vault;
 
         // Check each underlying asset's ratio.
         for (uint256 i = 0; i < vaults.length; i++) {
-            vault = vaults[i];
-            uint256 actualRatio = calculateCurrentRatio(vault, totalAssets); // Calculate current ratio
+            uint256 actualRatio = calculateCurrentRatio(vaults[i], totalAssets); // Calculate current ratio
 
             // Check if the actual ratio deviates from the target ratio
             if (!isWithinTolerance(actualRatio, targetRatios[i])) {
@@ -114,25 +116,41 @@ contract BaseKeeper is Ownable {
 
     function isWithinTolerance(uint256 actualWAD, uint256 targetWAD) public view returns (bool) {
         if (actualWAD >= targetWAD) {
-            // todo: make tolerance a percentage
+            // TODO: make tolerance a percentage
             return (actualWAD - targetWAD) <= tolerance; // Upper bound
         } else {
             return (targetWAD - actualWAD) <= tolerance; // Lower bound
         }
     }
 
-    function rebalance() public returns (Transfer[] memory) {
-        uint256 length = targetRatios.length;
-        require(length > 1, "Array length must be greater than 1");
-        require(length == targetRatios.length, "Array lengths must match");
-        require(length == vaults.length, "Array lengths must match");
+    function currentRatios() public view returns (uint256[] memory ratios) {
+        uint256 length = vaults.length;
+        uint256 totalAssets = maxVault.totalAssets();
+        ratios = new uint256[](length);
+        for (uint256 i = 0; i < length; i++) {
+            ratios[i] = calculateCurrentRatio(vaults[i], totalAssets);
+        }
+    }
 
-        uint256 totalInitial = _totalInitialRatios();
-        uint256 totalFinal = _totalTargetRatios();
+    function finalRatios() public view returns (uint256[] memory ratios) {
+        return targetRatios;
+    }
 
-        require(totalInitial == totalFinal, "Ratios must add up");
+    function calculateDiffs() public view returns (int256[] memory diffs) {
+        uint256 length = vaults.length;
 
         uint256 totalAssets = maxVault.totalAssets();
+        uint256[] memory initialRatios = new uint256[](length);
+
+        uint256 totalInitial = 0;
+        uint256 totalFinal = totalTargetRatios();
+
+        for (uint256 i = 0; i < vaults.length; i++) {
+            initialRatios[i] = calculateCurrentRatio(vaults[i], totalAssets);
+            totalInitial += initialRatios[i];
+        }
+
+        require(totalInitial == totalFinal, "Ratios must add up");
 
         uint256[] memory initialAmounts = new uint256[](length);
         for (uint256 i = 0; i < length; i++) {
@@ -144,22 +162,38 @@ contract BaseKeeper is Ownable {
             finalAmounts[i] = targetRatios[i] * totalAssets / totalFinal;
         }
 
-        int256[] memory diffs = new int256[](length);
+        diffs = new int256[](length);
 
         // Calculate differences
         for (uint256 i = 0; i < length; i++) {
             diffs[i] = int256(initialAmounts[i]) - int256(finalAmounts[i]);
         }
+    }
 
-        Transfer[] memory steps = new Transfer[](length);
-        uint256 stepIndex = 0;
+    function calculateTransfers() public view returns (Withdraw[] memory, Deposit[] memory) {
+        uint256 length = vaults.length;
+
+        int256[] memory diffs = calculateDiffs();
+
+        Withdraw[] memory withdraws = new Withdraw[](length);
+        Deposit[] memory deposits = new Deposit[](length);
+        uint256 withdrawIndex = 0;
+        uint256 depositIndex = 0;
 
         for (uint256 i = 0; i < length; i++) {
             if (diffs[i] > 0) {
                 for (uint256 j = 0; j < length; j++) {
                     if (diffs[j] < 0) {
                         uint256 transferAmount = uint256(diffs[i] > -diffs[j] ? -diffs[j] : diffs[i]);
-                        steps[stepIndex++] = Transfer(i, j, transferAmount);
+
+                        if (j == 0) {
+                            withdraws[withdrawIndex++] = Withdraw(i, transferAmount);
+                        } else if (i == 0) {
+                            deposits[depositIndex++] = Deposit(j, transferAmount);
+                        } else {
+                            withdraws[withdrawIndex++] = Withdraw(i, transferAmount);
+                            deposits[depositIndex++] = Deposit(j, transferAmount);
+                        }
 
                         diffs[i] -= int256(transferAmount);
                         diffs[j] += int256(transferAmount);
@@ -170,11 +204,89 @@ contract BaseKeeper is Ownable {
             }
         }
 
-        Transfer[] memory finalSteps = new Transfer[](stepIndex);
-        for (uint256 i = 0; i < stepIndex; i++) {
-            finalSteps[i] = steps[i];
+        Withdraw[] memory sortedWithdraws = new Withdraw[](length);
+        Deposit[] memory sortedDeposits = new Deposit[](length);
+
+        uint256 sortedWithdrawIndex = 0;
+        uint256 sortedDepositIndex = 0;
+
+        for (uint256 j = 0; j < length; j++) {
+            uint256 withdrawAmount = 0;
+            uint256 depositAmount = 0;
+            for (uint256 i = 0; i < withdrawIndex; i++) {
+                if (withdraws[i].from == j) {
+                    withdrawAmount += withdraws[i].amount;
+                }
+            }
+            for (uint256 i = 0; i < depositIndex; i++) {
+                if (deposits[i].to == j) {
+                    depositAmount += deposits[i].amount;
+                }
+            }
+            if (withdrawAmount > 0) {
+                sortedWithdraws[sortedWithdrawIndex++] = Withdraw(j, withdrawAmount);
+            }
+            if (depositAmount > 0) {
+                sortedDeposits[sortedDepositIndex++] = Deposit(j, depositAmount);
+            }
         }
 
-        return finalSteps;
+        Withdraw[] memory finalWithdraws = new Withdraw[](sortedWithdrawIndex);
+        Deposit[] memory finalDeposits = new Deposit[](sortedDepositIndex);
+
+        for (uint256 i = 0; i < sortedWithdrawIndex; i++) {
+            finalWithdraws[i] = sortedWithdraws[i];
+        }
+        for (uint256 i = 0; i < sortedDepositIndex; i++) {
+            finalDeposits[i] = sortedDeposits[i];
+        }
+
+        return (finalWithdraws, finalDeposits);
+    }
+
+    function rebalance() public nonReentrant {
+        (Withdraw[] memory withdraws, Deposit[] memory deposits) = calculateTransfers();
+        for (uint256 i = 0; i < withdraws.length; i++) {
+            _executeWithdraw(withdraws[i]);
+        }
+        for (uint256 i = 0; i < deposits.length; i++) {
+            _executeDeposit(deposits[i]);
+        }
+    }
+
+    function _executeWithdraw(Withdraw memory withdraw) internal {
+        uint256 amount = withdraw.amount;
+        address vault = vaults[withdraw.from];
+
+        address[] memory targets = new address[](1);
+        targets[0] = vault;
+
+        uint256[] memory values = new uint256[](1);
+        values[0] = 0;
+
+        bytes[] memory data = new bytes[](1);
+        data[0] =
+            abi.encodeWithSignature("withdraw(uint256,address,address)", amount, address(maxVault), address(maxVault));
+
+        maxVault.processor(targets, values, data);
+    }
+
+    function _executeDeposit(Deposit memory deposit) internal {
+        uint256 amount = deposit.amount;
+        address vault = vaults[deposit.to];
+
+        address[] memory targets = new address[](2);
+        targets[0] = asset;
+        targets[1] = vault;
+
+        uint256[] memory values = new uint256[](2);
+        values[0] = 0;
+        values[1] = 0;
+
+        bytes[] memory data = new bytes[](2);
+        data[0] = abi.encodeWithSignature("approve(address,uint256)", vault, amount);
+        data[1] = abi.encodeWithSignature("deposit(uint256,address)", amount, address(maxVault));
+
+        maxVault.processor(targets, values, data);
     }
 }

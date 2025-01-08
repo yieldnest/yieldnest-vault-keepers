@@ -14,51 +14,71 @@ import {BaseKeeper} from "src/BaseKeeper.sol";
 contract BaseKeeperTest is Test, MainnetActors, VaultUtils {
     BaseKeeper public keeper;
     Vault public maxVault;
-    Vault public underlyingVault1;
-    Vault public underlyingVault2;
-
+    Vault[] public underlyingVaults;
     WETH9 public weth;
+    uint256 public length;
 
     uint256 public constant INITIAL_BALANCE = 10 ether;
 
     address public alice = address(0xa11ce);
+
+    function _vaults() internal view returns (address[] memory vaults) {
+        vaults = new address[](underlyingVaults.length + 1);
+        vaults[0] = address(maxVault);
+        for (uint256 i = 0; i < underlyingVaults.length; i++) {
+            vaults[i + 1] = address(underlyingVaults[i]);
+        }
+    }
+
+    function _underlyingVaults() internal view returns (address[] memory vaults) {
+        vaults = new address[](underlyingVaults.length);
+        for (uint256 i = 0; i < underlyingVaults.length; i++) {
+            vaults[i] = address(underlyingVaults[i]);
+        }
+    }
 
     function setUp() public {
         keeper = new BaseKeeper();
 
         SetupVault setupVault = new SetupVault();
         (maxVault, weth) = setupVault.setup();
-        (underlyingVault1,) = setupVault.setup();
-        (underlyingVault2,) = setupVault.setup();
+        (Vault underlyingVault1,) = setupVault.setup();
+        (Vault underlyingVault2,) = setupVault.setup();
+        (Vault underlyingVault3,) = setupVault.setup();
+
+        underlyingVaults.push(underlyingVault1);
+        underlyingVaults.push(underlyingVault2);
+        underlyingVaults.push(underlyingVault3);
+
+        length = underlyingVaults.length + 1;
 
         vm.startPrank(ADMIN);
         maxVault.grantRole(maxVault.PROCESSOR_ROLE(), address(keeper));
         vm.stopPrank();
 
         vm.startPrank(ASSET_MANAGER);
-        maxVault.addAsset(address(underlyingVault1), false);
-        maxVault.addAsset(address(underlyingVault2), false);
+        for (uint256 i = 0; i < underlyingVaults.length; i++) {
+            maxVault.addAsset(address(underlyingVaults[i]), false);
+        }
         vm.stopPrank();
-
-        address[] memory vaults = new address[](2);
-        vaults[0] = address(underlyingVault1);
-        vaults[1] = address(underlyingVault2);
 
         // set rules for maxVault
         vm.startPrank(PROCESSOR_MANAGER);
-        setDepositRule(maxVault, address(underlyingVault1));
-        setDepositRule(maxVault, address(underlyingVault2));
+        for (uint256 i = 0; i < underlyingVaults.length; i++) {
+            setDepositRule(maxVault, address(underlyingVaults[i]));
+        }
 
-        setApprovalRule(maxVault, address(weth), vaults);
+        setApprovalRule(maxVault, address(weth), _underlyingVaults());
 
-        setWithdrawRule(maxVault, address(underlyingVault1));
-        setWithdrawRule(maxVault, address(underlyingVault2));
+        for (uint256 i = 0; i < underlyingVaults.length; i++) {
+            setWithdrawRule(maxVault, address(underlyingVaults[i]));
+        }
 
         // set rules for underlyingVaults
-        setDepositRule(underlyingVault1, MC.BUFFER);
-        setDepositRule(underlyingVault2, MC.BUFFER);
-        setApprovalRule(underlyingVault1, address(weth), MC.BUFFER);
-        setApprovalRule(underlyingVault2, address(weth), MC.BUFFER);
+        for (uint256 i = 0; i < underlyingVaults.length; i++) {
+            setDepositRule(underlyingVaults[i], MC.BUFFER);
+            setApprovalRule(underlyingVaults[i], address(weth), MC.BUFFER);
+        }
 
         vm.stopPrank();
 
@@ -75,43 +95,44 @@ contract BaseKeeperTest is Test, MainnetActors, VaultUtils {
 
         vm.label(address(weth), "WETH");
         vm.label(address(maxVault), "Max Vault");
-        vm.label(address(underlyingVault1), "Underlying Vault 1");
-        vm.label(address(underlyingVault2), "Underlying Vault 2");
+        for (uint256 i = 0; i < underlyingVaults.length; i++) {
+            vm.label(address(underlyingVaults[i]), string.concat("Underlying Vault ", vm.toString(i)));
+        }
         vm.label(address(keeper), "BaseKeeper");
     }
 
     function test_ViewFunctions() public view {
         assertEq(maxVault.totalAssets(), INITIAL_BALANCE);
-        assertEq(underlyingVault1.totalAssets(), 0);
-        assertEq(underlyingVault2.totalAssets(), 0);
+        for (uint256 i = 0; i < underlyingVaults.length; i++) {
+            assertEq(underlyingVaults[i].totalAssets(), 0);
+        }
         assertEq(weth.balanceOf(address(maxVault)), INITIAL_BALANCE);
+        for (uint256 i = 0; i < underlyingVaults.length; i++) {
+            assertEq(weth.balanceOf(address(underlyingVaults[i])), 0);
+        }
     }
 
     function test_SetData() public {
-        uint256[] memory finalRatios = new uint256[](3);
-        address[] memory vaults = new address[](3);
-
+        uint256[] memory finalRatios = new uint256[](length);
         finalRatios[0] = 40 * 1e16;
         finalRatios[1] = 40 * 1e16;
-        finalRatios[2] = 20 * 1e16;
+        finalRatios[2] = 10 * 1e16;
+        finalRatios[3] = 10 * 1e16;
+        assertEq(finalRatios[0] + finalRatios[1] + finalRatios[2] + finalRatios[3], 1e18);
 
-        assertEq(finalRatios[0] + finalRatios[1] + finalRatios[2], 1e18);
-
-        vaults[0] = address(maxVault);
-        vaults[1] = address(underlyingVault1);
-        vaults[2] = address(underlyingVault2);
-
-        keeper.setData(finalRatios, vaults);
+        keeper.setData(finalRatios, _vaults());
 
         uint256[] memory initialRatios = keeper.currentRatios();
         uint256[] memory targetRatios = keeper.finalRatios();
 
-        assertEq(initialRatios.length, 3);
-        assertEq(targetRatios.length, 3);
+        assertEq(initialRatios.length, length);
+        assertEq(targetRatios.length, length);
 
         assertEq(initialRatios[0], 1e18);
-        assertEq(targetRatios[1], 40 * 1e16);
-        assertEq(keeper.vaults(2), address(underlyingVault2));
+        for (uint256 i = 0; i < length; i++) {
+            assertEq(targetRatios[i], finalRatios[i]);
+            assertEq(keeper.vaults(i), _vaults()[i]);
+        }
     }
 
     function test_CalculateTransfers_ExampleOne() public {
@@ -132,8 +153,7 @@ contract BaseKeeperTest is Test, MainnetActors, VaultUtils {
     }
 
     function test_Rebalance_ExampleOne() public {
-        _setData(0.5e18, 0.25e18, 0.25e18);
-        _rebalanceAndValidate();
+        _testRebalance(0.5e18, 0.25e18, 0.25e18);
     }
 
     function test_CalculateTransfers_ExampleTwo() public {
@@ -154,8 +174,7 @@ contract BaseKeeperTest is Test, MainnetActors, VaultUtils {
     }
 
     function test_Rebalance_ExampleTwo() public {
-        _setData(0.5e18, 0.4e18, 0.1e18);
-        _rebalanceAndValidate();
+        _testRebalance(0.5e18, 0.4e18, 0.1e18);
     }
 
     function test_CalculateTransfers_ExampleThree() public {
@@ -176,13 +195,11 @@ contract BaseKeeperTest is Test, MainnetActors, VaultUtils {
     }
 
     function test_Rebalance_ExampleThree() public {
-        _setData(0.5e18, 0.2e18, 0.3e18);
-        _rebalanceAndValidate();
+        _testRebalance(0.5e18, 0.2e18, 0.3e18);
     }
 
     function test_Rebalance_TwoTimes() public {
-        _setData(0.5e18, 0.2e18, 0.3e18);
-        _rebalanceAndValidate();
+        _testRebalance(0.5e18, 0.2e18, 0.3e18);
 
         _setData(0.5e18, 0.4e18, 0.1e18);
 
@@ -209,45 +226,36 @@ contract BaseKeeperTest is Test, MainnetActors, VaultUtils {
         assertEq(withdraws[0].from, 2, "Expected from for withdraw 0");
         assertEq(withdraws[0].amount, 2 * INITIAL_BALANCE / 10, "Expected amount for withdraw 0");
 
-        _allocateBalanceToBuffer(underlyingVault1);
-        _allocateBalanceToBuffer(underlyingVault2);
+        _allocateBalanceToBuffer(underlyingVaults[0]);
+        _allocateBalanceToBuffer(underlyingVaults[1]);
 
         _rebalanceAndValidate();
     }
 
     function test_Rebalance_MultipleTimes() public {
-        _setData(0.5e18, 0.2e18, 0.3e18);
-        _rebalanceAndValidate();
+        _testRebalance(0.5e18, 0.2e18, 0.3e18);
 
-        _setData(0.5e18, 0.4e18, 0.1e18);
-        _allocateBalanceToBuffer(underlyingVault1);
-        _allocateBalanceToBuffer(underlyingVault2);
+        _testRebalance(0.5e18, 0.4e18, 0.1e18);
 
-        _rebalanceAndValidate();
+        _testRebalance(0.5e18, 0.2e18, 0.3e18);
 
-        _setData(0.5e18, 0.2e18, 0.3e18);
-        _allocateBalanceToBuffer(underlyingVault1);
-        _allocateBalanceToBuffer(underlyingVault2);
+        _testRebalance(0, 1e18, 0);
 
-        _rebalanceAndValidate();
+        _testRebalance(0, 0, 1e18);
 
-        _setData(0, 1e18, 0);
-        _allocateBalanceToBuffer(underlyingVault1);
-        _allocateBalanceToBuffer(underlyingVault2);
+        _testRebalance(1e18, 0, 0);
+    }
 
-        _rebalanceAndValidate();
+    function test_Rebalance_WithThreeUnderlyingVaults() public {
+        _testRebalance(0.5e18, 0.25e18, 0.1e18, 0.15e18);
 
-        _setData(0, 0, 1e18);
-        _allocateBalanceToBuffer(underlyingVault1);
-        _allocateBalanceToBuffer(underlyingVault2);
+        _testRebalance(0.5e18, 0.25e18, 0, 0.25e18);
 
-        _rebalanceAndValidate();
+        _testRebalance(0, 0.9e18, 0.1e18, 0);
 
-        _setData(1e18, 0, 0);
-        _allocateBalanceToBuffer(underlyingVault1);
-        _allocateBalanceToBuffer(underlyingVault2);
+        _testRebalance(0.35e18, 0.4e18, 0.25e18, 0);
 
-        _rebalanceAndValidate();
+        _testRebalance(0, 0.25e18, 0.25e18, 0.5e18);
     }
 
     function test_SetDataFailsForMismatchedArrayLengths() public {
@@ -273,8 +281,8 @@ contract BaseKeeperTest is Test, MainnetActors, VaultUtils {
         uint256 ratio3 = 0.25e17;
 
         vaults[0] = address(maxVault);
-        vaults[1] = address(underlyingVault1);
-        vaults[2] = address(underlyingVault2);
+        vaults[1] = address(underlyingVaults[0]);
+        vaults[2] = address(underlyingVaults[1]);
 
         finalRatios[0] = ratio1;
         finalRatios[1] = ratio2;
@@ -301,13 +309,29 @@ contract BaseKeeperTest is Test, MainnetActors, VaultUtils {
         assertEq(shouldRebalance, false);
     }
 
+    function _testRebalance(uint256 ratio1, uint256 ratio2, uint256 ratio3) public {
+        _setData(ratio1, ratio2, ratio3);
+        for (uint256 i = 0; i < underlyingVaults.length; i++) {
+            _allocateBalanceToBuffer(underlyingVaults[i]);
+        }
+        _rebalanceAndValidate(3);
+    }
+
+    function _testRebalance(uint256 ratio1, uint256 ratio2, uint256 ratio3, uint256 ratio4) public {
+        _setData(ratio1, ratio2, ratio3, ratio4);
+        for (uint256 i = 0; i < underlyingVaults.length; i++) {
+            _allocateBalanceToBuffer(underlyingVaults[i]);
+        }
+        _rebalanceAndValidate(4);
+    }
+
     function _setData(uint256 ratio1, uint256 ratio2, uint256 ratio3) internal {
         uint256[] memory finalRatios = new uint256[](3);
         address[] memory vaults = new address[](3);
 
         vaults[0] = address(maxVault);
-        vaults[1] = address(underlyingVault1);
-        vaults[2] = address(underlyingVault2);
+        vaults[1] = address(underlyingVaults[0]);
+        vaults[2] = address(underlyingVaults[1]);
 
         finalRatios[0] = ratio1;
         finalRatios[1] = ratio2;
@@ -322,16 +346,38 @@ contract BaseKeeperTest is Test, MainnetActors, VaultUtils {
         assertEq(targetRatios[2], ratio3, "Target ratio 2 incorrect");
     }
 
+    function _setData(uint256 ratio1, uint256 ratio2, uint256 ratio3, uint256 ratio4) internal {
+        uint256[] memory finalRatios = new uint256[](4);
+        finalRatios[0] = ratio1;
+        finalRatios[1] = ratio2;
+        finalRatios[2] = ratio3;
+        finalRatios[3] = ratio4;
+        assertEq(finalRatios[0] + finalRatios[1] + finalRatios[2] + finalRatios[3], 1e18);
+
+        keeper.setData(finalRatios, _vaults());
+
+        uint256[] memory targetRatios = keeper.finalRatios();
+
+        assertEq(targetRatios[0], ratio1, "Target ratio 0 incorrect");
+        assertEq(targetRatios[1], ratio2, "Target ratio 1 incorrect");
+        assertEq(targetRatios[2], ratio3, "Target ratio 2 incorrect");
+        assertEq(targetRatios[3], ratio4, "Target ratio 3 incorrect");
+    }
+
     function _rebalanceAndValidate() internal {
+        _rebalanceAndValidate(3);
+    }
+
+    function _rebalanceAndValidate(uint256 _length) internal {
         keeper.rebalance();
 
         uint256[] memory initialRatios = keeper.currentRatios();
         uint256[] memory targetRatios = keeper.finalRatios();
 
-        assertEq(initialRatios.length, 3);
-        assertEq(targetRatios.length, 3);
+        assertEq(initialRatios.length, _length);
+        assertEq(targetRatios.length, _length);
 
-        for (uint256 i = 0; i < 3; i++) {
+        for (uint256 i = 0; i < _length; i++) {
             assertEq(initialRatios[i], targetRatios[i], "Expected initial ratios to match target ratios");
         }
     }

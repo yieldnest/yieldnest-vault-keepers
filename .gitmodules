@@ -1,0 +1,4 @@
+[submodule "lib/yieldnest-vault"]
+	path = lib/yieldnest-vault
+	url = https://github.com/yieldnest/yieldnest-vault
+	branch = bnb-max-vault

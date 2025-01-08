@@ -180,64 +180,22 @@ contract BaseKeeper is Ownable, ReentrancyGuard {
         uint256 withdrawIndex = 0;
         uint256 depositIndex = 0;
 
-        for (uint256 i = 0; i < length; i++) {
+        for (uint256 i = 1; i < length; i++) {
             if (diffs[i] > 0) {
-                for (uint256 j = 0; j < length; j++) {
-                    if (diffs[j] < 0) {
-                        uint256 transferAmount = uint256(diffs[i] > -diffs[j] ? -diffs[j] : diffs[i]);
-
-                        if (j == 0) {
-                            withdraws[withdrawIndex++] = Withdraw(i, transferAmount);
-                        } else if (i == 0) {
-                            deposits[depositIndex++] = Deposit(j, transferAmount);
-                        } else {
-                            withdraws[withdrawIndex++] = Withdraw(i, transferAmount);
-                            deposits[depositIndex++] = Deposit(j, transferAmount);
-                        }
-
-                        diffs[i] -= int256(transferAmount);
-                        diffs[j] += int256(transferAmount);
-
-                        if (diffs[i] == 0) break;
-                    }
-                }
+                withdraws[withdrawIndex++] = Withdraw(i, uint256(diffs[i]));
+            } else if (diffs[i] < 0) {
+                deposits[depositIndex++] = Deposit(i, uint256(-diffs[i]));
             }
         }
 
-        Withdraw[] memory sortedWithdraws = new Withdraw[](length);
-        Deposit[] memory sortedDeposits = new Deposit[](length);
+        Withdraw[] memory finalWithdraws = new Withdraw[](withdrawIndex);
+        Deposit[] memory finalDeposits = new Deposit[](depositIndex);
 
-        uint256 sortedWithdrawIndex = 0;
-        uint256 sortedDepositIndex = 0;
-
-        for (uint256 j = 0; j < length; j++) {
-            uint256 withdrawAmount = 0;
-            uint256 depositAmount = 0;
-            for (uint256 i = 0; i < withdrawIndex; i++) {
-                if (withdraws[i].from == j) {
-                    withdrawAmount += withdraws[i].amount;
-                }
-            }
-            for (uint256 i = 0; i < depositIndex; i++) {
-                if (deposits[i].to == j) {
-                    depositAmount += deposits[i].amount;
-                }
-            }
-            if (withdrawAmount > depositAmount) {
-                sortedWithdraws[sortedWithdrawIndex++] = Withdraw(j, withdrawAmount - depositAmount);
-            } else if (depositAmount > withdrawAmount) {
-                sortedDeposits[sortedDepositIndex++] = Deposit(j, depositAmount - withdrawAmount);
-            }
+        for (uint256 i = 0; i < withdrawIndex; i++) {
+            finalWithdraws[i] = withdraws[i];
         }
-
-        Withdraw[] memory finalWithdraws = new Withdraw[](sortedWithdrawIndex);
-        Deposit[] memory finalDeposits = new Deposit[](sortedDepositIndex);
-
-        for (uint256 i = 0; i < sortedWithdrawIndex; i++) {
-            finalWithdraws[i] = sortedWithdraws[i];
-        }
-        for (uint256 i = 0; i < sortedDepositIndex; i++) {
-            finalDeposits[i] = sortedDeposits[i];
+        for (uint256 i = 0; i < depositIndex; i++) {
+            finalDeposits[i] = deposits[i];
         }
 
         return (finalWithdraws, finalDeposits);
